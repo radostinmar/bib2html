@@ -127,7 +127,11 @@ class Handler : RequestHandler<S3Event, Boolean> {
             }
             li {
                 +" $author "
-                a(href = url) {
+                if (url.isNotBlank()) {
+                    a(href = url) {
+                        +entry.title
+                    }
+                } else {
                     +entry.title
                 }
                 +" $year"
