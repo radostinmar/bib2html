@@ -22,6 +22,7 @@ dependencies {
     implementation("com.amazonaws:aws-java-sdk-s3:1.12.236")
     implementation("com.amazonaws:aws-lambda-java-core:1.2.1")
     implementation("com.amazonaws:aws-lambda-java-events:3.11.0")
+    implementation("com.itextpdf:itextpdf:5.5.13.3")
 
     testImplementation(kotlin("test"))
 }

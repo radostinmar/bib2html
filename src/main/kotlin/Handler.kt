@@ -6,6 +6,8 @@ import com.amazonaws.services.lambda.runtime.events.S3Event
 import com.amazonaws.services.s3.AmazonS3ClientBuilder
 import com.amazonaws.services.s3.model.ObjectMetadata
 import com.amazonaws.services.s3.model.PutObjectRequest
+import com.itextpdf.text.*
+import com.itextpdf.text.pdf.PdfWriter
 import kotlinx.html.*
 import kotlinx.html.dom.create
 import org.jbibtex.BibTeXDatabase
@@ -41,29 +43,40 @@ class Handler : RequestHandler<S3Event, Boolean> {
             val key = record.s3.`object`.key
             logger.log("Bucket: \"$bucketName\", Key: \"$key\"")
 
-            val objectInputStream = s3Client.getObject(bucketName, "test.bib").objectContent
+            val objectInputStream = s3Client.getObject(bucketName, key).objectContent
 
             val bibtexParser = BibTeXParser()
             val reader = CharacterFilterReader(InputStreamReader(objectInputStream))
             val database: BibTeXDatabase = bibtexParser.parse(reader)
 
-            val output = ByteArrayOutputStream()
-
-            createHtml(output, database.entries.values.toList())
-
-            val input = ByteArrayInputStream(output.toByteArray())
-
-            uploadToS3(input, key.removeSuffix(".bib"), "html")
+            database.entries.values.toList().also { entries ->
+                logger.log("Creating Html START")
+                createHtml(entries).also { inputStream ->
+                    uploadToS3(inputStream, key.removeSuffix(".bib"), "html")
+                }
+                logger.log("Creating Html END")
+                logger.log("Creating MD START")
+                createMd(entries).also { inputStream ->
+                    uploadToS3(inputStream, key.removeSuffix(".bib"), "md")
+                }
+                logger.log("Creating MD END")
+                logger.log("Creating PDF START")
+                createPdf(entries).also { inputStream ->
+                    uploadToS3(inputStream, key.removeSuffix(".bib"), "pdf")
+                }
+                logger.log("Creating PDF END")
+            }
         }
 
         return true
     }
 
-    private fun createHtml(output: OutputStream, entries: List<BibTeXEntry>) {
+    private fun createHtml(entries: List<BibTeXEntry>): InputStream {
+        val output = ByteArrayOutputStream()
         val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument()
         val html = document.create.html {
             head {
-                title("Document")
+                title("Result")
             }
             body {
                 ol {
@@ -72,6 +85,8 @@ class Handler : RequestHandler<S3Event, Boolean> {
             }
         }
         intoStream(html, output)
+
+        return ByteArrayInputStream(output.toByteArray())
     }
 
     private fun OL.createItems(entries: List<BibTeXEntry>): Unit = entries.forEach { entry ->
@@ -101,6 +116,50 @@ class Handler : RequestHandler<S3Event, Boolean> {
                 StreamResult(OutputStreamWriter(out, "UTF-8"))
             )
         }
+    }
+
+    private fun createMd(entries: List<BibTeXEntry>): InputStream {
+        val output = ByteArrayOutputStream()
+        entries.joinToString("\n") { entry ->
+            val author = entry.getField(BibTeXEntry.KEY_AUTHOR)?.toUserString().orEmpty()
+            val title = entry.getField(BibTeXEntry.KEY_TITLE)?.toUserString().orEmpty()
+            val url = entry.getField(BibTeXEntry.KEY_URL)?.toUserString().orEmpty()
+            val year = entry.getField(BibTeXEntry.KEY_YEAR)?.toUserString().orEmpty()
+
+            "1. $author [$title]($url) $year"
+        }.byteInputStream().copyTo(output)
+
+        return ByteArrayInputStream(output.toByteArray())
+    }
+
+    private fun createPdf(entries: List<BibTeXEntry>): InputStream {
+        val output = ByteArrayOutputStream()
+
+        Document().apply {
+            PdfWriter.getInstance(this, output)
+
+            open()
+            val font = FontFactory.getFont(FontFactory.COURIER, 12f, BaseColor.BLACK)
+            val urlFont = FontFactory.getFont(FontFactory.COURIER, 12f, Font.UNDERLINE, BaseColor.BLUE)
+
+            entries.forEachIndexed { index, entry ->
+                val author = entry.getField(BibTeXEntry.KEY_AUTHOR)?.toUserString().orEmpty()
+                val title = entry.getField(BibTeXEntry.KEY_TITLE)?.toUserString().orEmpty()
+                val url = entry.getField(BibTeXEntry.KEY_URL)?.toUserString().orEmpty()
+                val year = entry.getField(BibTeXEntry.KEY_YEAR)?.toUserString().orEmpty()
+
+                Paragraph().apply {
+                    add(Chunk("${index + 1}. $author ", font))
+                    add(Anchor(title, urlFont).apply { reference = url })
+                    add(Chunk(" $year", font))
+                }.also {
+                    add(it)
+                }
+            }
+            close()
+        }
+
+        return ByteArrayInputStream(output.toByteArray())
     }
 
     private fun uploadToS3(inputStream: InputStream, name: String, extension: String) {
