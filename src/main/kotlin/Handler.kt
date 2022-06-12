@@ -49,9 +49,11 @@ class Handler : RequestHandler<S3Event, Boolean> {
             val reader = CharacterFilterReader(InputStreamReader(objectInputStream))
             val database: BibTeXDatabase = bibtexParser.parse(reader)
 
-            database.entries.values.toList().also { entries ->
+            database.entries.values.sortedBy {
+                it.getField(BibTeXEntry.KEY_YEAR)?.toUserString()?.toIntOrNull() ?: Int.MAX_VALUE
+            }.also { entries ->
                 logger.log("Creating Html START")
-                createHtml(entries).also { inputStream ->
+                createHtml(entries, key.removeSuffix(".bib")).also { inputStream ->
                     uploadToS3(inputStream, key.removeSuffix(".bib"), "html")
                 }
                 logger.log("Creating Html END")
@@ -71,16 +73,43 @@ class Handler : RequestHandler<S3Event, Boolean> {
         return true
     }
 
-    private fun createHtml(entries: List<BibTeXEntry>): InputStream {
+    private fun createHtml(entries: List<BibTeXEntry>, htmlTitle: String): InputStream {
         val output = ByteArrayOutputStream()
         val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument()
         val html = document.create.html {
             head {
-                title("Result")
+                style {
+                    unsafe {
+                        raw(
+                            """
+                            li {
+                                margin-right: 3%;
+                                margin-left: 2%;
+                                margin-bottom: 8px;
+                                font-size: 1.2em;
+                                font-family: 'Roboto', sans-serif;
+                            }
+                            p {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                margin-right: 3%;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                background-color: #ebecf4;
+                                font-size: 1.2em;
+                                font-family: 'Roboto', sans-serif;
+                            }
+                        """.trimIndent()
+                        )
+                    }
+                }
+                title(htmlTitle)
             }
             body {
-                ol {
-                    createItems(entries)
+                main {
+                    ol {
+                        createItems(entries)
+                    }
                 }
             }
         }
@@ -89,20 +118,34 @@ class Handler : RequestHandler<S3Event, Boolean> {
         return ByteArrayInputStream(output.toByteArray())
     }
 
-    private fun OL.createItems(entries: List<BibTeXEntry>): Unit = entries.forEach { entry ->
-        val author = entry.getField(BibTeXEntry.KEY_AUTHOR)?.toUserString().orEmpty()
-        val title = entry.getField(BibTeXEntry.KEY_TITLE)?.toUserString().orEmpty()
-        val url = entry.getField(BibTeXEntry.KEY_URL)?.toUserString().orEmpty()
-        val year = entry.getField(BibTeXEntry.KEY_YEAR)?.toUserString().orEmpty()
-
-        li {
-            +author
-            a(href = url) {
-                +title
+    private fun OL.createItems(entries: List<BibTeXEntry>): Unit = entries.forEachIndexed { index, entry ->
+        with(entry) {
+            if (index == 0 || (year != entries[index - 1].year)) {
+                p {
+                    +year
+                }
             }
-            +year
+            li {
+                +" $author "
+                a(href = url) {
+                    +entry.title
+                }
+                +" $year"
+            }
         }
     }
+
+    private val BibTeXEntry.author: String
+        get() = getField(BibTeXEntry.KEY_AUTHOR)?.toUserString().orEmpty()
+
+    private val BibTeXEntry.title: String
+        get() = getField(BibTeXEntry.KEY_TITLE)?.toUserString().orEmpty()
+
+    private val BibTeXEntry.url: String
+        get() = getField(BibTeXEntry.KEY_URL)?.toUserString().orEmpty()
+
+    private val BibTeXEntry.year: String
+        get() = getField(BibTeXEntry.KEY_YEAR)?.toUserString() ?: "No year"
 
     private fun intoStream(doc: Element, out: OutputStream) {
         with(TransformerFactory.newInstance().newTransformer()) {
